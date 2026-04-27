@@ -1,5 +1,4 @@
 
-<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
@@ -15,90 +14,9 @@
 </head>
 <body class="bg-slate-950 font-sans text-white overflow-hidden selection:bg-emerald-900 h-screen w-screen flex items-center justify-center">
 
-  <!-- 初始化連線遮罩 -->
-  <div id="loading-overlay" class="fixed inset-0 z-[999] bg-slate-950 flex items-center justify-center text-emerald-400 font-bold text-lg sm:text-2xl tracking-widest flex-col gap-4">
-     <i data-lucide="loader-2" class="animate-spin w-10 h-10"></i>
-     <span>雲端連線引擎初始化中...</span>
-  </div>
-
   <div id="app-root" class="w-full h-full"></div>
 
-  <!-- ★ 將 Script 升級為 Module 以引入 Firebase SDK -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-    // ==========================================
-    // ★ 你的專屬 Firebase 連線金鑰設定區 ★
-    // ==========================================
-    // 請將你在 Firebase 複製的數值，貼在對應的引號 "" 裡面
-    
-    const myFirebaseConfig = {
-      apiKey: "AIzaSyDfNVjE9IbApM7J3oVVDzJ41Zf7xGoiMbg",
-      authDomain: "fcode-d352d.firebaseapp.com",
-      projectId: "fcode-d352d",
-      storageBucket: "fcode-d352d.firebasestorage.app",
-      messagingSenderId: "562103674913",
-      appId: "1:562103674913:web:cd4f24cc00a94013a6db60"
-    };
-
-    // ==========================================
-    // 以下為系統自動判斷邏輯，請勿更動
-    // ==========================================
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'card-code-breaker-demo';
-    
-    // 自動判斷是否填寫了金鑰
-    let finalConfig;
-    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-        finalConfig = JSON.parse(__firebase_config); // AI 平台環境
-    } else if (myFirebaseConfig.apiKey.includes("請替換")) {
-        finalConfig = { projectId: 'demo-local-fallback' }; // 未填寫，使用離線模式
-    } else {
-        finalConfig = myFirebaseConfig; // GitHub Pages 環境
-    }
-
-    const app = initializeApp(finalConfig);
-    const auth = getAuth(app);
-    const db = getFirestore(app);
-
-    // 全域連線變數
-    let currentUser = null;
-    let currentRoomCode = null;
-    let isHost = false;
-    let unsubscribe = null;
-
-    // 匿名登入 (確保每次都有唯一的玩家 ID)
-    (async () => {
-      let isLoaded = false;
-      const finishLoading = () => {
-        if(isLoaded) return;
-        isLoaded = true;
-        const loader = document.getElementById('loading-overlay');
-        if (loader) loader.style.display = 'none';
-        render(); // 渲染主選單
-      };
-
-      // 防呆機制：3 秒後強制關閉載入畫面
-      setTimeout(() => { finishLoading(); }, 3000);
-
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (e) {
-        console.warn("Firebase 尚未配置完成，已切換至離線單機模式。");
-        finishLoading();
-      }
-
-      onAuthStateChanged(auth, user => {
-        currentUser = user;
-        finishLoading();
-      });
-    })();
-
+  <script>
     // ==========================================
     // 遊戲資料與常數
     // ==========================================
@@ -115,6 +33,7 @@
       [COLORS.RED, COLORS.BLACK].forEach(color => {
         deck.push({ id: idCounter++, color, value: JOKER_VALUE, isJoker: true, revealed: false });
       });
+      // 洗牌
       for (let i = deck.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [deck[i], deck[j]] = [deck[j], deck[i]];
@@ -130,11 +49,11 @@
     };
 
     // ==========================================
-    // 狀態管理 (Shared State)
+    // 狀態管理 (純單機版)
     // ==========================================
     let state = {
-      gameState: 'MENU',
-      gameMode: null,
+      gameState: 'MENU', // 'MENU', 'PLACING_JOKER', 'PLAYING', 'GAME_OVER'
+      gameMode: null, // null, 'SINGLE_SETUP', 'DEMO'
       aiCount: 2, 
       players: [],
       currentPlayerId: 0,
@@ -143,13 +62,12 @@
       target: null,
       logs: [],
       winner: null,
+      jokersToPlace: [],
       cardBackStyle: 'grid',
-      showReasoning: false,
-      lobbyPlayers: [],
-      lobbyTimer: 15,
-      turnTimeLeft: 20
+      showReasoning: false
     };
 
+    // 更新狀態並觸發重新渲染
     function setState(newState) {
       state = { ...state, ...newState };
       render();
@@ -157,22 +75,7 @@
 
     function addLog(msg) {
       state.logs.push(msg);
-      // 注意：這裡不直接 render，由呼叫端決定是否要 syncState 上雲端
-    }
-
-    // ★ 狀態同步引擎 (State Synchronization)
-    async function syncState() {
-       if (currentRoomCode && currentUser && finalConfig.projectId !== 'demo-local-fallback') {
-          try {
-             const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', currentRoomCode);
-             await updateDoc(docRef, { gameStateStr: JSON.stringify(state) });
-          } catch(e) { 
-             console.error("Sync Error", e); 
-             render(); // 若斷線仍更新本地畫面
-          }
-       } else {
-          render(); // 單機模式直接渲染
-       }
+      render();
     }
 
     // ==========================================
@@ -204,175 +107,82 @@
             const insertIdx = Math.floor(Math.random() * (numbers.length + 1));
             numbers.splice(insertIdx, 0, joker);
           });
-          return { ...p, cards: numbers, jokersToPlace: [] };
+          return { ...p, cards: numbers };
         }
-        return { ...p, cards: numbers, jokersToPlace: jokers };
+        return p;
       });
+
+      const playerJokers = tempPlayers[0].cards.filter(c => c.isJoker);
+      tempPlayers[0].cards = sortCards(tempPlayers[0].cards.filter(c => !c.isJoker));
 
       state.players = tempPlayers;
       state.initialStartPlayerId = startPlayerId;
-      state.currentPlayerId = startPlayerId;
-      state.gameState = 'PLAYING';
-      
-      state.logs.push(`遊戲開始！`);
-      state.logs.push(`[系統] 起始玩家為 ${tempPlayers[startPlayerId].name}。`);
+      state.logs = [`遊戲開始！`, `[系統] 判定發牌數量，起始玩家為 ${tempPlayers[startPlayerId].name}。`];
 
-      const firstPlayer = state.players[startPlayerId];
-      if (firstPlayer.jokersToPlace && firstPlayer.jokersToPlace.length > 0) {
-         state.turnPhase = 'PLACING_JOKER';
-         state.logs.push(`請 ${firstPlayer.name} 安插萬能牌`);
-      } else {
+      if (playerJokers.length > 0 && !tempPlayers[0].isBot) {
+        state.jokersToPlace = playerJokers;
+        state.gameState = 'PLACING_JOKER';
+        state.currentPlayerId = 0;
+        addLog('你有萬能牌 (*)，請選擇一個位置安插以干擾對手推理。');
+      } else if (playerJokers.length > 0 && tempPlayers[0].isBot) {
+         let botCards = [...tempPlayers[0].cards];
+         playerJokers.forEach(joker => {
+            const insertIdx = Math.floor(Math.random() * (botCards.length + 1));
+            botCards.splice(insertIdx, 0, joker);
+         });
+         tempPlayers[0].cards = botCards;
+         state.gameState = 'PLAYING';
+         state.currentPlayerId = startPlayerId;
          state.turnPhase = 'GUESSING';
-         state.logs.push(`▶ ${firstPlayer.name} 回合`);
+         addLog(`▶ ${tempPlayers[startPlayerId].name} 回合`);
+         render();
+      } else {
+        state.gameState = 'PLAYING';
+        state.currentPlayerId = startPlayerId;
+        state.turnPhase = 'GUESSING';
+        addLog(`▶ ${tempPlayers[startPlayerId].name} 回合`);
+        if (startPlayerId === 0 && !tempPlayers[0].isBot) addLog('請點選對手蓋牌猜測');
+        render();
       }
-      
-      state.turnTimeLeft = 20;
-      syncState();
+      render();
     }
 
-    window.startSingleGame = function() {
-      let tempPlayers = [{ id: 0, uid: currentUser?.uid || 'local', name: '你 (玩家)', isBot: false }];
+    function startSingleGame() {
+      let tempPlayers = [{ id: 0, name: '你 (玩家)', isBot: false }];
       for(let i = 1; i <= state.aiCount; i++) {
-          tempPlayers.push({ id: i, uid: `bot_${i}`, name: `電腦 AI-${i}`, isBot: true });
+          tempPlayers.push({ id: i, name: `電腦 AI-${i}`, isBot: true });
       }
       initGameCards(tempPlayers);
-    };
+    }
 
-    window.startDemoGame = function() {
+    function startDemoGame() {
       state.aiCount = 3;
       state.showReasoning = true;
       state.gameMode = 'DEMO';
       let tempPlayers = [];
       for(let i = 0; i <= 3; i++) {
-          tempPlayers.push({ id: i, uid: `demo_${i}`, name: `電腦 AI-${i+1}`, isBot: true });
+          tempPlayers.push({ id: i, name: `電腦 AI-${i+1}`, isBot: true });
       }
       initGameCards(tempPlayers);
-    };
+    }
 
-    // ★ 建立連線房間 (Host)
-    window.createRoom = async function() {
-      if (finalConfig.projectId === 'demo-local-fallback') {
-         alert("⚠️ 系統偵測未設定資料庫：\n目前為離線環境，無法建立連線大廳。\n若要在您的網站啟用連線功能，請於程式碼上方填入 Firebase 金鑰。");
-         return;
-      }
-      if (!currentUser) { alert("尚未連上伺服器，請稍後"); return; }
+    function handlePlaceJoker(index) {
+      const joker = state.jokersToPlace[0];
+      const newCards = [...state.players[0].cards];
+      newCards.splice(index, 0, joker);
+      state.players[0].cards = newCards;
+      state.jokersToPlace = state.jokersToPlace.slice(1);
       
-      currentRoomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
-      isHost = true;
-
-      state.lobbyPlayers = [{ uid: currentUser.uid, name: '你 (房主)', isBot: false, id: 0 }];
-      state.lobbyTimer = 15;
-      state.gameMode = 'MULTI_LOBBY';
-
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', currentRoomCode);
-      await setDoc(docRef, {
-         gameStateStr: JSON.stringify(state),
-         hostUid: currentUser.uid,
-         createdAt: Date.now()
-      });
-
-      unsubscribe = onSnapshot(docRef, (snapshot) => {
-         if (snapshot.exists()) {
-            const data = snapshot.data();
-            const cloudState = JSON.parse(data.gameStateStr);
-            state = { ...state, ...cloudState };
-            render();
-         }
-      });
-    };
-
-    // ★ 加入連線房間 (Guest)
-    window.joinRoom = async function() {
-      if (finalConfig.projectId === 'demo-local-fallback') {
-         alert("⚠️ 系統偵測未設定資料庫：\n目前為離線環境，無法加入連線大廳。");
-         return;
-      }
-      if (!currentUser) return;
-      const code = prompt("請輸入 4 碼房間代碼 (不分大小寫)：");
-      if (!code) return;
-      
-      const roomCodeUpper = code.toUpperCase();
-      try {
-         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomCodeUpper);
-         const docSnap = await getDoc(docRef);
-         
-         if (!docSnap.exists()) {
-            alert("找不到此房間！請確認代碼是否正確。");
-            return;
-         }
-         
-         currentRoomCode = roomCodeUpper;
-         isHost = false;
-
-         const data = docSnap.data();
-         const cloudState = JSON.parse(data.gameStateStr);
-         
-         if (cloudState.lobbyPlayers.length < cloudState.aiCount + 1 && cloudState.gameState === 'MENU') {
-            cloudState.lobbyPlayers.push({
-               uid: currentUser.uid,
-               name: `玩家 ${cloudState.lobbyPlayers.length + 1}`,
-               isBot: false,
-               id: cloudState.lobbyPlayers.length
-            });
-            await updateDoc(docRef, { gameStateStr: JSON.stringify(cloudState) });
-         } else {
-            alert("房間已滿或遊戲已開始，將以觀戰模式進入。");
-         }
-         
-         state = { ...state, ...cloudState };
-
-         unsubscribe = onSnapshot(docRef, (snapshot) => {
-            if (snapshot.exists()) {
-               const newData = snapshot.data();
-               state = { ...state, ...JSON.parse(newData.gameStateStr) };
-               render();
-            }
-         });
-      } catch(e) {
-         alert("連線失敗：" + e.message);
-      }
-    };
-
-    // 離開房間
-    window.leaveRoom = function() {
-       if (unsubscribe) {
-           unsubscribe();
-           unsubscribe = null;
-       }
-       currentRoomCode = null;
-       isHost = false;
-       setState({
-          gameState: 'MENU',
-          gameMode: null,
-          aiCount: 2,
-          players: [],
-          currentPlayerId: 0,
-          initialStartPlayerId: 0,
-          turnPhase: 'IDLE',
-          target: null,
-          logs: [],
-          winner: null,
-          showReasoning: false,
-          lobbyPlayers: [],
-          lobbyTimer: 15,
-          turnTimeLeft: 20
-       });
-    };
-
-    window.handlePlaceJoker = function(index) {
-      const p = state.players[state.currentPlayerId];
-      const joker = p.jokersToPlace[0];
-      p.cards.splice(index, 0, joker);
-      p.jokersToPlace = p.jokersToPlace.slice(1);
-      
-      if (p.jokersToPlace.length === 0) {
+      if (state.jokersToPlace.length === 0) {
+        state.gameState = 'PLAYING';
+        state.currentPlayerId = state.initialStartPlayerId;
         state.turnPhase = 'GUESSING';
-        addLog(`${p.name} 萬能牌安插完畢。`);
-        addLog(`▶ ${p.name} 回合開始`);
+        state.logs.push('萬能牌安插完畢。遊戲正式開始！');
+        state.logs.push(`▶ ${state.players[state.initialStartPlayerId].name} 回合`);
+        if (state.initialStartPlayerId === 0 && !state.players[0].isBot) state.logs.push('請點選對手蓋牌猜測');
       }
-      state.turnTimeLeft = 20;
-      syncState();
-    };
+      render();
+    }
 
     function checkWinSync() {
       const activePlayers = state.players.filter(p => !p.cards.every(c => c.revealed));
@@ -386,7 +196,7 @@
       return false;
     }
 
-    window.endTurn = function() {
+    function endTurn() {
       let nextPlayerId = state.currentPlayerId;
       let limit = 0;
       do {
@@ -395,22 +205,14 @@
       } while (state.players[nextPlayerId].cards.every(c => c.revealed) && limit < state.players.length);
 
       state.currentPlayerId = nextPlayerId;
-      const nextP = state.players[nextPlayerId];
-
-      if (nextP.jokersToPlace && nextP.jokersToPlace.length > 0) {
-         state.turnPhase = 'PLACING_JOKER';
-         addLog(`請 ${nextP.name} 安插萬能牌`);
-      } else {
-         state.turnPhase = 'GUESSING';
-         addLog(`▶ ${nextP.name} 回合`);
-      }
-      
+      state.turnPhase = 'GUESSING';
       state.target = null;
-      state.turnTimeLeft = 20;
-      syncState();
-    };
+      addLog(`▶ ${state.players[nextPlayerId].name} 回合`);
+      if (nextPlayerId === 0 && !state.players[0].isBot) addLog('請點選對手蓋牌猜測');
+      render();
+    }
 
-    window.handleGuess = function(guessedValue) {
+    function handleGuess(guessedValue) {
       const activeTarget = state.target;
       if (!activeTarget) return;
       
@@ -419,33 +221,30 @@
       const isCorrect = targetCard.value.toString() === guessedValue.toString();
       const colorName = targetCard.color === COLORS.RED ? '紅' : '黑';
 
-      addLog(`${state.players[state.currentPlayerId].name} 猜測 ${state.players[opponentId].name} [${colorName} ${guessedValue}]`);
+      addLog(`${state.players[state.currentPlayerId].name} 猜 ${state.players[opponentId].name} [${colorName} ${guessedValue}]`);
 
       if (isCorrect) {
-        addLog(`🟢 猜中了！確實是 ${colorName} ${targetCard.value}。`);
+        addLog(`🟢 猜中了！該牌確實是 ${colorName} ${targetCard.value}。`);
         const pIdx = state.players.findIndex(p => p.id === opponentId);
         const cIdx = state.players[pIdx].cards.findIndex(c => c.id === targetCard.id);
         state.players[pIdx].cards[cIdx].revealed = true;
         
-        if (checkWinSync()) { syncState(); return; }
+        if (checkWinSync()) { render(); return; }
         
         state.target = null;
         state.turnPhase = 'DECIDING_NEXT';
-        state.turnTimeLeft = 20;
+        if (state.currentPlayerId === 0 && !state.players[0].isBot) addLog('你可以選擇「繼續猜測」或是「結束回合」。');
       } else {
-        addLog(`🔴 猜錯了！`);
+        addLog(`🔴 猜錯了！判定猜測失敗。`);
         state.target = null;
         state.turnPhase = 'PUNISHMENT';
-        state.turnTimeLeft = 20;
+        if (state.currentPlayerId === 0 && !state.players[0].isBot) addLog(`請選擇你自己的一張蓋牌翻開以示懲罰。`);
       }
-      syncState();
-    };
+      render();
+    }
 
-    window.handlePunishment = function(playerId, cardId) {
-      const myIndex = state.players && state.players.length > 0 ? Math.max(0, state.players.findIndex(p => p.uid === currentUser?.uid)) : 0;
-      const myPlayer = state.players[myIndex];
-
-      if (state.turnPhase !== 'PUNISHMENT' || state.currentPlayerId !== myPlayer.id || myPlayer.isBot) return;
+    function handlePunishment(playerId, cardId) {
+      if (state.turnPhase !== 'PUNISHMENT' || state.currentPlayerId !== 0 || state.players[0].isBot) return;
       
       const pIdx = state.players.findIndex(p => p.id === playerId);
       const cIdx = state.players[pIdx].cards.findIndex(c => c.id === cardId);
@@ -454,86 +253,35 @@
       if (card.revealed) return;
       
       state.players[pIdx].cards[cIdx].revealed = true;
-      addLog(`${myPlayer.name} 翻開了 [${card.color === COLORS.RED ? '紅' : '黑'} ${card.value}] 作為懲罰。`);
+      addLog(`${state.players[0].name} 翻開了 [${card.color === COLORS.RED ? '紅' : '黑'} ${card.value}] 作為懲罰。`);
       
-      if (!checkWinSync()) window.endTurn();
-      else syncState();
-    };
+      if (!checkWinSync()) endTurn();
+      else render();
+    }
 
-    window.setTargetByCardId = function(playerId, cardId) {
-      const myIndex = state.players && state.players.length > 0 ? Math.max(0, state.players.findIndex(p => p.uid === currentUser?.uid)) : 0;
-      const myPlayer = state.players[myIndex];
-      const isSpectator = myPlayer?.uid !== currentUser?.uid;
-
-      if (state.currentPlayerId === myPlayer.id && state.turnPhase === 'GUESSING' && !myPlayer.isBot && !isSpectator) {
+    function setTargetByCardId(playerId, cardId) {
+      if (state.currentPlayerId === 0 && state.turnPhase === 'GUESSING' && !state.players[0].isBot) {
          const p = state.players.find(p => p.id === playerId);
          const c = p.cards.find(c => c.id === cardId);
          if (c && !c.revealed && !p.cards.every(x => x.revealed)) {
             setState({ target: { playerId, card: c } });
          }
       }
-    };
+    }
 
     // ==========================================
-    // 全局計時器與 AI 管理 (僅由房主 Host 執行)
+    // 全局計時器與 AI 管理
     // ==========================================
     let globalTickInterval = setInterval(() => {
-      
-      // 連線大廳等待機制 (Host 負責踢人與啟動)
-      if (state.gameMode === 'MULTI_LOBBY' && isHost) {
-        if (state.lobbyPlayers.length >= state.aiCount + 1) {
-           if (!window.startingGame) {
-              window.startingGame = true;
-              setTimeout(() => {
-                 initGameCards(state.lobbyPlayers);
-                 window.startingGame = false;
-              }, 1500);
-           }
-        } else {
-           state.lobbyTimer = state.lobbyTimer > 0 ? state.lobbyTimer - 1 : 0;
-           if (state.lobbyTimer === 0) {
-              state.lobbyPlayers.push({ uid: `ai_${Date.now()}`, id: state.lobbyPlayers.length, name: `電腦 AI-${state.lobbyPlayers.length} (遞補)`, isBot: true });
-              state.lobbyTimer = 15;
-           }
-           syncState(); 
-        }
-      }
-
-      // 遊玩中：超時與 AI 代打 (單機 或 房主負責計算)
-      const isLocalSingle = !currentRoomCode;
-      if ((isLocalSingle || isHost) && (state.gameState === 'PLAYING' || state.gameState === 'PLACING_JOKER') && !state.winner) {
-        
-        const cp = state.players[state.currentPlayerId];
-        
-        // 如果是真人，倒數超時防掛網
-        if (cp && !cp.isBot) {
-           state.turnTimeLeft = state.turnTimeLeft > 0 ? state.turnTimeLeft - 1 : 0;
-           
-           if (state.turnTimeLeft === 0) {
-              addLog(`⚠️ [防掛網] ${cp.name} 逾時未操作，已由 AI 全權接管！`);
-              cp.isBot = true;
-              cp.name = cp.name.replace(' (房主)', '').replace(' (玩家)', '') + ' (AI託管)';
-              
-              if (state.turnPhase === 'PLACING_JOKER') {
-                  let currentCards = [...cp.cards];
-                  cp.jokersToPlace.forEach(joker => {
-                      const index = Math.floor(Math.random() * (currentCards.length + 1));
-                      currentCards.splice(index, 0, joker);
-                  });
-                  cp.cards = currentCards;
-                  cp.jokersToPlace = [];
-                  state.turnPhase = 'GUESSING';
-                  addLog(`▶ ${cp.name} 回合`);
-              }
-           }
-           syncState();
-        }
-
-        // 如果是機器人，觸發 AI 邏輯
-        if (cp && cp.isBot && !window.aiIsActing) {
+      // AI 動作觸發
+      if (state.gameState === 'PLAYING' && !state.winner) {
+         const cp = state.players[state.currentPlayerId];
+         if (cp && cp.isBot && !window.aiIsActing) {
              window.aiIsActing = true;
-             setTimeout(() => { triggerAILogic(); }, 1200);
-        }
+             setTimeout(() => {
+                triggerAILogic();
+             }, 1200);
+         }
       }
     }, 1000);
 
@@ -547,15 +295,14 @@
           const unrevealedCards = targetOpponent.cards.filter(c => !c.revealed);
           const targetCard = unrevealedCards[Math.floor(Math.random() * unrevealedCards.length)];
 
-          state.target = { playerId: targetOpponent.id, card: targetCard };
-          syncState();
+          setState({ target: { playerId: targetOpponent.id, card: targetCard } });
           
           setTimeout(() => {
              const guesses = [...CARD_VALUES, JOKER_VALUE];
              const guess = guesses[Math.floor(Math.random() * guesses.length)];
-             window.handleGuess(guess.toString());
+             handleGuess(guess.toString());
              window.aiIsActing = false;
-          }, 1200);
+          }, 800);
        } 
        else if (state.turnPhase === 'PUNISHMENT') {
           const unrevealed = state.players[state.currentPlayerId].cards.filter(c => !c.revealed);
@@ -564,20 +311,20 @@
             const pIdx = state.players.findIndex(p => p.id === state.currentPlayerId);
             const cIdx = state.players[pIdx].cards.findIndex(c => c.id === toReveal.id);
             state.players[pIdx].cards[cIdx].revealed = true;
-            addLog(`${state.players[state.currentPlayerId].name} 翻開了 [${toReveal.color === COLORS.RED ? '紅' : '黑'} ${toReveal.value}]。`);
-            if (!checkWinSync()) window.endTurn();
-            else syncState();
+            addLog(`${state.players[state.currentPlayerId].name} 翻開 [${toReveal.color === COLORS.RED ? '紅' : '黑'} ${toReveal.value}] 懲罰`);
+            if (!checkWinSync()) endTurn();
+            else render();
           }
           window.aiIsActing = false;
        }
        else if (state.turnPhase === 'DECIDING_NEXT') {
-          if (Math.random() > 0.6) {
+          if (Math.random() > 0.7) {
             addLog(`${state.players[state.currentPlayerId].name} 繼續猜測...`);
             state.turnPhase = 'GUESSING';
-            syncState();
+            render();
           } else {
-            addLog(`${state.players[state.currentPlayerId].name} 結束回合。`);
-            window.endTurn();
+            addLog(`${state.players[state.currentPlayerId].name} 結束回合`);
+            endTurn();
           }
           window.aiIsActing = false;
        } else {
@@ -597,9 +344,9 @@
       cross: `background-image: radial-gradient(circle, transparent 20%, rgba(0,0,0,0.1) 20%, rgba(0,0,0,0.1) 80%, transparent 80%, transparent), radial-gradient(circle, transparent 20%, rgba(0,0,0,0.1) 20%, rgba(0,0,0,0.1) 80%, transparent 80%, transparent) 25px 25px; background-size: 50px 50px;`
     };
 
-    function renderCardView(card, position, oppId, isSelectable, isSpectator, myPlayer) {
+    function renderCardView(card, position, oppId, isSelectable) {
       const isRed = card.color === COLORS.RED;
-      const isLocalHuman = position === 'bottom' && (!myPlayer || !myPlayer.isBot) && !isSpectator;
+      const isLocalHuman = position === 'bottom' && (!state.players[0] || !state.players[0].isBot);
       
       const frameColor = isRed ? 'bg-red-800 border-red-950' : 'bg-slate-900 border-black';
       const textColor = isRed ? 'text-red-800' : 'text-slate-900';
@@ -646,7 +393,7 @@
       return html;
     }
 
-    function renderOpponent(opp, position, myPlayer, isSpectator) {
+    function renderOpponent(opp, position) {
       if (!opp) return '';
       const isEliminated = opp.cards.every(c => c.revealed);
       let displayCards = [...opp.cards];
@@ -657,7 +404,7 @@
       const sizeClass = position === 'top' ? 'w-[40px] sm:w-[56px] lg:w-[80px] xl:w-[90px] aspect-[2/3]' : 'w-[60px] sm:w-[84px] lg:w-[120px] xl:w-[135px] aspect-[3/2]';
       const isTurn = state.currentPlayerId === opp.id;
       
-      const icon = (opp.name.includes('AI') || opp.name.includes('電腦') || (opp.name.includes('玩家') && !opp.name.includes('連線') && opp.id !== 0)) 
+      const icon = (opp.name.includes('AI') || opp.name.includes('電腦') || (opp.name.includes('玩家') && opp.id !== 0)) 
         ? `<i data-lucide="bot" class="w-[14px] h-[14px] ${isTurn ? 'text-amber-400' : 'text-slate-400'}"></i>`
         : `<i data-lucide="user" class="w-[14px] h-[14px] ${isTurn ? 'text-emerald-400' : 'text-slate-400'}"></i>`;
 
@@ -678,11 +425,11 @@
         if (position === 'left') hoverTransform = "hover:translate-x-2 sm:hover:translate-x-4 lg:hover:translate-x-6";
         if (position === 'right') hoverTransform = "hover:-translate-x-2 sm:hover:-translate-x-4 lg:hover:-translate-x-6";
         
-        const isSel = state.currentPlayerId === myPlayer?.id && state.turnPhase === 'GUESSING' && !card.revealed && !isEliminated && !myPlayer.isBot && !isSpectator;
+        const isSel = state.currentPlayerId === 0 && state.turnPhase === 'GUESSING' && !card.revealed && !isEliminated && (!state.players[0] || !state.players[0].isBot);
 
         html += `
           <div style="z-index: ${idx + 10}" class="relative ${idx > 0 ? overlapClass : ''} ${sizeClass} ${hoverTransform} hover:translate-y-[-4px] hover:z-50 transition-transform cursor-pointer">
-            ${renderCardView(card, position, opp.id, isSel, isSpectator, myPlayer)}
+            ${renderCardView(card, position, opp.id, isSel)}
           </div>
         `;
       });
@@ -697,8 +444,7 @@
       const knownCards = new Set();
       state.players.forEach(p => {
          p.cards.forEach(c => {
-            // 所有翻開的牌 + 本機玩家(若非觀戰者)手上的牌
-            if (c.revealed || (p.uid === currentUser?.uid)) {
+            if (c.revealed || (!p.isBot && p.id === 0)) {
                knownCards.add(`${c.color}-${c.value}`);
             }
          });
@@ -737,7 +483,7 @@
     }
 
     function renderMenu() {
-      window.setStateProxy = function(obj) { setState(obj); }; // Proxy for inline HTML
+      window.setStateProxy = function(obj) { setState(obj); };
 
       let html = `
         <div class="z-50 w-full max-w-6xl px-4 py-8 flex flex-col lg:flex-row gap-6 items-center lg:items-stretch justify-center max-h-screen overflow-y-auto hide-scroll">
@@ -777,25 +523,30 @@
 
       if (!state.gameMode) {
         html += `
-              <div class="space-y-3 pt-2 transition-all">
-                <button onclick="window.setStateProxy({gameMode: 'SINGLE_SETUP'})" class="w-full py-4 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02] shadow-md">
+              <div class="space-y-4 pt-4 transition-all">
+                <button onclick="window.setStateProxy({gameMode: 'SINGLE_SETUP'})" class="w-full py-5 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02] shadow-md">
                   <i data-lucide="monitor-smartphone" class="w-6 h-6 text-emerald-400"></i>
                   <span class="text-emerald-400 font-bold text-lg tracking-widest">單機對戰</span>
                 </button>
-                <button onclick="window.setStateProxy({gameMode: 'MULTI_SETUP'})" class="w-full py-4 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02] shadow-md">
+                
+                <!-- ★ 多人連線按鈕已被屏蔽隱藏 ★ -->
+                <!--
+                <button onclick="window.setStateProxy({gameMode: 'MULTI_SETUP'})" class="w-full py-4 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02] shadow-md opacity-50 cursor-not-allowed">
                   <i data-lucide="users" class="w-6 h-6 text-amber-400"></i>
-                  <span class="text-amber-400 font-bold text-lg tracking-widest">多人連線</span>
+                  <span class="text-amber-400 font-bold text-lg tracking-widest">多人連線 (維護中)</span>
                 </button>
-                <button onclick="window.startDemoGame()" class="w-full py-4 mt-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02] shadow-md">
+                -->
+
+                <button onclick="window.startDemoGame()" class="w-full py-5 mt-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02] shadow-md">
                   <i data-lucide="play-square" class="w-6 h-6 text-purple-400"></i>
                   <span class="text-purple-400 font-bold text-lg tracking-widest">展示遊戲</span>
                 </button>
-                <p class="text-slate-500 text-xs italic pt-2">~ 選擇模式進入桌面 ~</p>
+                <p class="text-slate-500 text-xs italic pt-4">~ 選擇模式進入桌面 ~</p>
               </div>
         `;
       }
 
-      if (state.gameMode === 'SINGLE_SETUP' || state.gameMode === 'MULTI_SETUP') {
+      if (state.gameMode === 'SINGLE_SETUP') {
         html += `
               <div class="space-y-6 pt-4 relative transition-all animate-in fade-in slide-in-from-right-4">
                 <div class="w-full flex justify-start">
@@ -804,7 +555,6 @@
                   </button>
                 </div>
                 
-                ${state.gameMode === 'SINGLE_SETUP' ? `
                 <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
                   <p class="text-slate-200 font-bold text-lg mb-4 flex items-center justify-center gap-2"><i data-lucide="bot" class="w-5 h-5 text-emerald-400"></i> 單機對戰設定</p>
                   <div class="flex flex-col items-center gap-3 mb-6">
@@ -829,49 +579,6 @@
                 <button onclick="window.startSingleGame()" class="w-full py-4 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold rounded-xl text-lg transition-all active:scale-95 shadow-[0_4px_20px_rgba(16,185,129,0.4)]">
                   立即開局
                 </button>
-                ` : `
-                <button onclick="window.createRoom()" class="w-full py-6 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-xl text-lg transition-all active:scale-95 shadow-[0_4px_20px_rgba(16,185,129,0.4)] border border-emerald-500 flex flex-col items-center gap-2">
-                  <i data-lucide="home" class="w-6 h-6"></i> 建立連線大廳 (房主)
-                </button>
-                <div class="w-full h-px bg-slate-700 my-2"></div>
-                <button onclick="window.joinRoom()" class="w-full py-6 bg-slate-800 hover:bg-slate-700 border-2 border-amber-600/50 text-amber-500 font-bold rounded-xl text-lg transition-all active:scale-95 shadow-[0_0_15px_rgba(245,158,11,0.2)] flex flex-col items-center gap-2">
-                  <i data-lucide="log-in" class="w-6 h-6"></i> 輸入代碼加入房間 (訪客)
-                </button>
-                `}
-              </div>
-        `;
-      }
-
-      if (state.gameMode === 'MULTI_LOBBY') {
-        html += `
-              <div class="space-y-3 pt-2 relative transition-all flex flex-col items-center animate-in zoom-in-95">
-                <div class="w-full flex justify-start">
-                  <button onclick="window.leaveRoom()" class="text-slate-400 hover:text-red-400 flex items-center gap-1 text-sm transition-colors">
-                    <i data-lucide="arrow-left" class="w-4 h-4"></i> 捨棄並關閉房間
-                  </button>
-                </div>
-                <p class="text-emerald-400 font-bold text-sm sm:text-base flex items-center justify-center gap-2 mb-2">
-                  <i data-lucide="wifi" class="w-[18px] h-[18px] animate-pulse"></i> 區域連線大廳啟動中
-                </p>
-                <div class="bg-white p-3 rounded-xl inline-block border-4 border-emerald-500 text-center w-full max-w-[200px] shadow-[0_0_20px_rgba(16,185,129,0.3)]">
-                   <div class="text-xs text-slate-500 font-bold mb-1">您的房間代碼</div>
-                   <div class="text-4xl font-black text-slate-900 tracking-widest">${currentRoomCode}</div>
-                </div>
-                <p class="text-amber-400 font-bold text-xs sm:text-sm mt-1">請讓好友點擊「加入房間」並輸入代碼</p>
-                <div class="bg-slate-800 rounded-lg p-3 border border-slate-700 text-left mt-2 w-full">
-                  <div class="text-[10px] sm:text-xs text-slate-400 mb-2 border-b border-slate-700 pb-1 flex justify-between">
-                    <span>已加入成員 (${state.lobbyPlayers.length}/${state.aiCount + 1})</span>
-                    ${isHost ? `<span class="text-amber-500 font-mono">NEXT AI: ${state.lobbyTimer}s</span>` : ''}
-                  </div>
-                  <div class="space-y-1.5 max-h-[100px] overflow-y-auto hide-scroll">
-                    ${state.lobbyPlayers.map(p => `
-                       <div class="flex items-center gap-2 font-bold text-xs sm:text-sm py-0.5 ${p.id === 0 ? 'text-emerald-400' : 'text-slate-300'}">
-                         ${p.id === 0 ? '👑' : (p.isBot ? '🤖' : '👤')} ${p.name} ${p.uid === currentUser?.uid ? '(你)' : ''}
-                       </div>
-                    `).join('')}
-                    ${state.lobbyPlayers.length < state.aiCount + 1 ? `<div class="flex items-center gap-2 text-slate-500 text-xs py-0.5 animate-pulse"><i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i> 等待連線玩家...</div>` : ''}
-                  </div>
-                </div>
               </div>
         `;
       }
@@ -889,7 +596,6 @@
               <li>在中央面板選擇數字。</li>
               <li><strong class="text-emerald-400">猜中：</strong>牌面公開，可繼續猜測或選擇結束回合。</li>
               <li><strong class="text-red-400">猜錯：</strong>必須強制翻開自己的一張牌並結束回合。</li>
-              <li><strong class="text-amber-500">限時規則：</strong>多人連線每次操作限時 20 秒。</li>
             </ul>
           </div>
         </div>
@@ -898,25 +604,17 @@
     }
 
     function renderGame() {
-      // 找出本機真實玩家 (若為觀戰者，則 myIndex 預設為 0，並標記 isSpectator)
-      const myIndex = state.players && state.players.length > 0 
-                  ? Math.max(0, state.players.findIndex(p => p.uid === currentUser?.uid)) 
-                  : 0;
-      const myPlayer = state.players[myIndex];
-      const isSpectator = myPlayer?.uid !== currentUser?.uid;
-
-      // 動態座位計算
       let seatMap = {};
       const n = state.players.length;
       if (n === 2) {
-         seatMap.top = (myIndex + 1) % 2;
+         seatMap.top = 1;
       } else if (n === 3) {
-         seatMap.right = (myIndex + 1) % 3;
-         seatMap.left = (myIndex + 2) % 3;
+         seatMap.left = 1;
+         seatMap.right = 2;
       } else if (n === 4) {
-         seatMap.right = (myIndex + 1) % 4;
-         seatMap.top = (myIndex + 2) % 4;
-         seatMap.left = (myIndex + 3) % 4;
+         seatMap.left = 1;
+         seatMap.top = 2;
+         seatMap.right = 3;
       }
 
       const isGameOver = state.gameState === 'GAME_OVER';
@@ -925,9 +623,9 @@
         <div class="relative w-full h-full max-w-screen-2xl bg-[radial-gradient(circle_at_center,#115e59_0%,#022c22_100%)] rounded-[1.5rem] sm:rounded-[3rem] border-[12px] sm:border-[24px] border-slate-900 shadow-[inset_0_0_80px_rgba(0,0,0,0.8)] m-1 sm:m-4 overflow-hidden">
           
           ${!isGameOver ? `
-          <button onclick="window.leaveRoom()" class="absolute top-2 left-2 sm:top-5 sm:left-6 z-[100] flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2 bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg border border-slate-700 shadow-lg transition-all hover:scale-105 backdrop-blur-sm group">
+          <button onclick="window.setState({gameState: 'MENU', gameMode: null, showReasoning: false})" class="absolute top-2 left-2 sm:top-5 sm:left-6 z-[100] flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2 bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg border border-slate-700 shadow-lg transition-all hover:scale-105 backdrop-blur-sm group">
             <i data-lucide="arrow-left" class="w-3 h-3 sm:w-4 sm:h-4 group-hover:-translate-x-1 transition-transform"></i>
-            <span class="font-bold text-[10px] sm:text-sm lg:text-base tracking-widest">${state.gameMode === 'DEMO' ? '結束展示' : (currentRoomCode ? '離開房間' : '放棄對局')}</span>
+            <span class="font-bold text-[10px] sm:text-sm lg:text-base tracking-widest">${state.gameMode === 'DEMO' ? '結束展示' : '放棄對局'}</span>
           </button>
           ` : ''}
 
@@ -936,7 +634,7 @@
             <div class="w-full ${state.showReasoning ? 'sm:w-[600px] lg:w-[800px] xl:w-[900px]' : 'sm:w-[420px] lg:w-[500px]'} h-[220px] sm:h-[260px] lg:h-[300px] bg-slate-900/95 backdrop-blur-md rounded-2xl border-[4px] border-slate-800 p-3 sm:p-4 lg:p-6 flex flex-col relative shadow-[0_20px_50px_rgba(0,0,0,0.8)] pointer-events-auto transition-all duration-300">
       `;
 
-      if (state.target && state.currentPlayerId === myPlayer?.id && state.turnPhase === 'GUESSING' && !myPlayer.isBot && !isSpectator) {
+      if (state.target && state.currentPlayerId === 0 && state.turnPhase === 'GUESSING' && (!state.players[0] || !state.players[0].isBot)) {
         html += `
           <div class="absolute inset-0 bg-slate-900/95 z-30 flex flex-col items-center justify-center p-2 backdrop-blur-sm rounded-xl">
             <p class="mb-2 sm:mb-4 text-sm sm:text-base lg:text-lg font-bold text-slate-200 text-center">猜測 <span class="text-amber-400">${state.players[state.target.playerId].name}</span> 的 <span class="${state.target.card.color === COLORS.RED ? 'text-red-500' : 'text-slate-400'}">${state.target.card.color === COLORS.RED ? '紅色' : '黑色'}</span> 牌？</p>
@@ -947,18 +645,18 @@
             </div>
           </div>
         `;
-      } else if (state.currentPlayerId === myPlayer?.id && state.turnPhase === 'DECIDING_NEXT' && !myPlayer.isBot && !isSpectator) {
+      } else if (state.currentPlayerId === 0 && state.turnPhase === 'DECIDING_NEXT' && (!state.players[0] || !state.players[0].isBot)) {
         html += `
           <div class="absolute inset-0 bg-emerald-950/95 z-30 flex flex-col items-center justify-center backdrop-blur-sm border-2 border-emerald-800 rounded-xl">
             <i data-lucide="check-circle-2" class="w-10 h-10 lg:w-14 lg:h-14 text-emerald-500 mb-2"></i>
             <p class="mb-4 text-base sm:text-xl lg:text-2xl font-bold text-emerald-300 tracking-widest uppercase">猜對了！</p>
             <div class="flex space-x-3 sm:space-x-6">
-              <button onclick="window.setState({turnPhase: 'GUESSING'}); window.addLog('你 選擇繼續猜測...'); window.syncState();" class="px-4 py-2 lg:px-6 lg:py-3 bg-emerald-600 text-white font-bold rounded shadow hover:bg-emerald-500 transition-colors text-sm lg:text-base">繼續猜測</button>
+              <button onclick="window.setState({turnPhase: 'GUESSING'}); window.addLog('你 選擇繼續猜測...');" class="px-4 py-2 lg:px-6 lg:py-3 bg-emerald-600 text-white font-bold rounded shadow hover:bg-emerald-500 transition-colors text-sm lg:text-base">繼續猜測</button>
               <button onclick="window.addLog('你 選擇結束回合。'); window.endTurn();" class="px-4 py-2 lg:px-6 lg:py-3 bg-slate-800 text-slate-300 font-bold rounded shadow border border-slate-600 hover:bg-slate-700 transition-colors text-sm lg:text-base">結束回合</button>
             </div>
           </div>
         `;
-      } else if (state.currentPlayerId === myPlayer?.id && state.turnPhase === 'PUNISHMENT' && !myPlayer.isBot && !isSpectator) {
+      } else if (state.currentPlayerId === 0 && state.turnPhase === 'PUNISHMENT' && (!state.players[0] || !state.players[0].isBot)) {
         html += `
           <div class="absolute inset-0 bg-red-950/95 z-30 flex flex-col items-center justify-center backdrop-blur-sm pointer-events-none rounded-xl border-2 border-red-900">
             <i data-lucide="x-circle" class="w-10 h-10 lg:w-14 lg:h-14 text-red-500 mb-2 animate-bounce"></i>
@@ -970,7 +668,7 @@
           <div class="absolute inset-0 bg-slate-900/95 z-40 flex flex-col items-center justify-center backdrop-blur-md rounded-xl">
             <h2 class="text-2xl sm:text-3xl lg:text-5xl font-black mb-2 text-amber-500 tracking-widest drop-shadow-md">對局結束</h2>
             <p class="text-lg sm:text-xl lg:text-2xl font-bold text-emerald-400 mb-4 lg:mb-6">${state.winner} 贏得勝利</p>
-            <button onclick="window.leaveRoom()" class="px-5 py-2 lg:px-8 lg:py-3 bg-slate-700 hover:bg-slate-600 border border-slate-500 text-white rounded font-bold shadow-lg transition-colors text-sm lg:text-base uppercase tracking-widest">返回大廳</button>
+            <button onclick="window.setState({gameState: 'MENU', gameMode: null})" class="px-5 py-2 lg:px-8 lg:py-3 bg-slate-700 hover:bg-slate-600 border border-slate-500 text-white rounded font-bold shadow-lg transition-colors text-sm lg:text-base uppercase tracking-widest">返回主畫面</button>
           </div>
         `;
       }
@@ -982,9 +680,6 @@
                   <div class="text-[10px] sm:text-xs lg:text-sm text-amber-500/70 font-bold border-b border-slate-700/50 pb-1 lg:pb-2 mb-1.5 lg:mb-3 tracking-widest uppercase flex items-center justify-between">
                     <div class="flex items-center gap-1.5"><i data-lucide="info" class="w-[10px] h-[10px] lg:w-[14px] lg:h-[14px]"></i> 戰況紀錄</div>
                     <span class="flex items-center gap-2">
-                      ${currentRoomCode && (state.gameState === 'PLAYING' || state.gameState === 'PLACING_JOKER') 
-                        ? `<span class="font-mono ${state.turnTimeLeft <= 5 ? 'text-red-400 animate-pulse' : 'text-emerald-400'}"><i data-lucide="timer" class="w-[10px] h-[10px] lg:w-[14px] lg:h-[14px] inline mr-0.5"></i>${state.turnTimeLeft}s</span>` 
-                        : ''}
                       <span class="animate-pulse text-emerald-500">● LIVE</span>
                     </span>
                   </div>
@@ -992,9 +687,9 @@
                     ${state.logs.map(log => {
                       let colorClass = 'text-slate-400';
                       if (log.includes('你')) colorClass = 'text-emerald-400';
-                      else if (log.includes('玩家 1') || log.includes('電腦 1')) colorClass = 'text-purple-400';
-                      else if (log.includes('玩家 2') || log.includes('電腦 2')) colorClass = 'text-orange-400';
-                      else if (log.includes('玩家 3') || log.includes('電腦 3')) colorClass = 'text-teal-400';
+                      else if (log.includes('電腦 AI-1')) colorClass = 'text-purple-400';
+                      else if (log.includes('電腦 AI-2')) colorClass = 'text-orange-400';
+                      else if (log.includes('電腦 AI-3')) colorClass = 'text-teal-400';
                       if (log.includes('▶')) colorClass = 'text-amber-400 font-bold mt-1.5 bg-slate-800 border border-slate-700 inline-block px-1.5 py-0.5 rounded-sm shadow-sm';
                       if (log.includes('🟢')) colorClass = 'text-green-500 font-bold';
                       if (log.includes('🔴')) colorClass = 'text-red-500 font-bold';
@@ -1011,31 +706,31 @@
           </div>
       `;
 
-      if (seatMap.top !== undefined) html += `<div class="absolute top-10 sm:top-12 lg:top-16 left-1/2 -translate-x-1/2 z-10">${renderOpponent(state.players[seatMap.top], 'top', myPlayer, isSpectator)}</div>`;
-      if (seatMap.left !== undefined) html += `<div class="absolute left-6 sm:left-10 lg:left-16 top-1/2 -translate-y-1/2 z-10">${renderOpponent(state.players[seatMap.left], 'left', myPlayer, isSpectator)}</div>`;
-      if (seatMap.right !== undefined) html += `<div class="absolute right-6 sm:right-10 lg:right-16 top-1/2 -translate-y-1/2 z-10">${renderOpponent(state.players[seatMap.right], 'right', myPlayer, isSpectator)}</div>`;
+      if (seatMap.top !== undefined) html += `<div class="absolute top-10 sm:top-12 lg:top-16 left-1/2 -translate-x-1/2 z-10">${renderOpponent(state.players[seatMap.top], 'top')}</div>`;
+      if (seatMap.left !== undefined) html += `<div class="absolute left-6 sm:left-10 lg:left-16 top-1/2 -translate-y-1/2 z-10">${renderOpponent(state.players[seatMap.left], 'left')}</div>`;
+      if (seatMap.right !== undefined) html += `<div class="absolute right-6 sm:right-10 lg:right-16 top-1/2 -translate-y-1/2 z-10">${renderOpponent(state.players[seatMap.right], 'right')}</div>`;
 
-      // Bottom Player (Me)
-      if (myPlayer) {
+      // Bottom Player (Me or Bot 0 in Demo)
+      if (state.players[0]) {
+         const myPlayer = state.players[0];
          html += `
              <div class="absolute bottom-4 sm:bottom-6 lg:bottom-10 left-2 right-2 sm:left-10 sm:right-10 lg:left-20 lg:right-20 z-10 flex flex-col items-center justify-end">
                <div class="relative px-6 py-1.5 lg:px-8 lg:py-2 bg-slate-800/90 rounded-t-xl border-2 border-b-0 border-emerald-500 font-bold text-emerald-400 text-sm sm:text-base lg:text-lg flex items-center justify-center gap-2 z-20">
-                  ${myPlayer.isBot ? '<i data-lucide="bot" class="w-4 h-4 lg:w-5 lg:h-5"></i> ' + myPlayer.name : '<i data-lucide="user" class="w-4 h-4 lg:w-5 lg:h-5"></i> 你的手牌'}
-                  ${isSpectator ? '<span class="text-xs text-slate-400 ml-2">(觀戰中)</span>' : ''}
+                  ${myPlayer.isBot ? '<i data-lucide="bot" class="w-4 h-4 lg:w-5 lg:h-5"></i> ' + myPlayer.name + ' (展示中)' : '<i data-lucide="user" class="w-4 h-4 lg:w-5 lg:h-5"></i> 你的手牌'}
                </div>
                <div class="flex flex-row items-center justify-center bg-white/10 p-2 sm:p-3 lg:p-5 rounded-xl border border-white/5 shadow-inner w-full max-w-[850px] lg:max-w-[1200px] gap-1 sm:gap-2 lg:gap-3">
          `;
 
-         if (state.turnPhase === 'PLACING_JOKER' && state.currentPlayerId === myPlayer.id) {
-           if (!myPlayer.isBot && !isSpectator) html += `<button onclick="window.handlePlaceJoker(0)" class="w-4 sm:w-6 lg:w-8 h-12 sm:h-16 lg:h-24 bg-emerald-500/50 hover:bg-emerald-400 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0 transition-transform hover:scale-110 shadow-lg">+</button>`;
+         if (state.turnPhase === 'PLACING_JOKER' && state.currentPlayerId === 0 && !myPlayer.isBot) {
+           html += `<button onclick="window.handlePlaceJoker(0)" class="w-4 sm:w-6 lg:w-8 h-12 sm:h-16 lg:h-24 bg-emerald-500/50 hover:bg-emerald-400 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0 transition-transform hover:scale-110 shadow-lg">+</button>`;
            myPlayer.cards.forEach((card, idx) => {
-              html += `<div class="relative flex-1 min-w-0 max-w-[48px] sm:max-w-[64px] lg:max-w-[100px] xl:max-w-[120px] aspect-[2/3] transition-transform hover:-translate-y-2 lg:hover:-translate-y-4">${renderCardView(card, 'bottom', myPlayer.id, false, isSpectator, myPlayer)}</div>`;
-              if (!myPlayer.isBot && !isSpectator) html += `<button onclick="window.handlePlaceJoker(${idx + 1})" class="w-4 sm:w-6 lg:w-8 h-12 sm:h-16 lg:h-24 bg-emerald-500/50 hover:bg-emerald-400 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0 transition-transform hover:scale-110 shadow-lg">+</button>`;
+              html += `<div class="relative flex-1 min-w-0 max-w-[48px] sm:max-w-[64px] lg:max-w-[100px] xl:max-w-[120px] aspect-[2/3] transition-transform hover:-translate-y-2 lg:hover:-translate-y-4">${renderCardView(card, 'bottom', 0, false)}</div>`;
+              html += `<button onclick="window.handlePlaceJoker(${idx + 1})" class="w-4 sm:w-6 lg:w-8 h-12 sm:h-16 lg:h-24 bg-emerald-500/50 hover:bg-emerald-400 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0 transition-transform hover:scale-110 shadow-lg">+</button>`;
            });
          } else {
            myPlayer.cards.forEach((card) => {
-              const isSel = state.currentPlayerId === myPlayer.id && state.turnPhase === 'PUNISHMENT' && !card.revealed && !myPlayer.isBot && !isSpectator;
-              html += `<div class="relative flex-1 min-w-0 max-w-[48px] sm:max-w-[64px] lg:max-w-[100px] xl:max-w-[120px] aspect-[2/3] transition-transform duration-200 hover:-translate-y-4 lg:hover:-translate-y-6 cursor-pointer z-10 hover:z-30">${renderCardView(card, 'bottom', myPlayer.id, isSel, isSpectator, myPlayer)}</div>`;
+              const isSel = state.currentPlayerId === 0 && state.turnPhase === 'PUNISHMENT' && !card.revealed && !myPlayer.isBot;
+              html += `<div class="relative flex-1 min-w-0 max-w-[48px] sm:max-w-[64px] lg:max-w-[100px] xl:max-w-[120px] aspect-[2/3] transition-transform duration-200 hover:-translate-y-4 lg:hover:-translate-y-6 cursor-pointer z-10 hover:z-30">${renderCardView(card, 'bottom', 0, isSel)}</div>`;
            });
          }
          html += `</div></div>`;
@@ -1063,6 +758,17 @@
       }
     }
 
+    // 將 actions 綁定到 window 以供 onclick 呼叫
+    window.setState = setState;
+    window.startSingleGame = startSingleGame;
+    window.startDemoGame = startDemoGame;
+    window.handlePlaceJoker = handlePlaceJoker;
+    window.handlePunishment = handlePunishment;
+    window.setTargetByCardId = setTargetByCardId;
+    window.handleGuess = handleGuess;
+    window.endTurn = endTurn;
+
+    // 初始渲染
     render();
 
   </script>
