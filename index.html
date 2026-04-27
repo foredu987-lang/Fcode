@@ -29,24 +29,35 @@
     import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     // ==========================================
-    // Firebase 初始化與防呆機制
+    // ★ 你的專屬 Firebase 連線金鑰設定區 ★
+    // ==========================================
+    // 請將你在 Firebase 複製的數值，貼在對應的引號 "" 裡面
+    
+    const myFirebaseConfig = {
+      apiKey: "AIzaSyDfNVjE9IbApM7J3oVVDzJ41Zf7xGoiMbg",
+      authDomain: "fcode-d352d.firebaseapp.com",
+      projectId: "fcode-d352d",
+      storageBucket: "fcode-d352d.firebasestorage.app",
+      messagingSenderId: "562103674913",
+      appId: "1:562103674913:web:cd4f24cc00a94013a6db60"
+    };
+
+    // ==========================================
+    // 以下為系統自動判斷邏輯，請勿更動
     // ==========================================
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'card-code-breaker-demo';
     
-    // ⚠️ 若要在 GitHub Pages 等外部空間使用「真實多人連線」，請將下方的 firebaseConfig 替換為您自己的 Firebase 專案設定！
-    /* 範例：
-    const firebaseConfig = {
-  apiKey: "AIzaSyDfNVjE9IbApM7J3oVVDzJ41Zf7xGoiMbg",
-  authDomain: "fcode-d352d.firebaseapp.com",
-  projectId: "fcode-d352d",
-  storageBucket: "fcode-d352d.firebasestorage.app",
-  messagingSenderId: "562103674913",
-  appId: "1:562103674913:web:cd4f24cc00a94013a6db60"
-};
-    */
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { projectId: 'demo-local-fallback' };
-    
-    const app = initializeApp(firebaseConfig);
+    // 自動判斷是否填寫了金鑰
+    let finalConfig;
+    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+        finalConfig = JSON.parse(__firebase_config); // AI 平台環境
+    } else if (myFirebaseConfig.apiKey.includes("請替換")) {
+        finalConfig = { projectId: 'demo-local-fallback' }; // 未填寫，使用離線模式
+    } else {
+        finalConfig = myFirebaseConfig; // GitHub Pages 環境
+    }
+
+    const app = initializeApp(finalConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
 
@@ -67,7 +78,7 @@
         render(); // 渲染主選單
       };
 
-      // ★ 防呆機制：如果 3 秒後連不上資料庫 (例如放在 GitHub Pages 卻沒設定 Config)，強制關閉載入畫面，讓玩家至少能玩單機版。
+      // 防呆機制：3 秒後強制關閉載入畫面
       setTimeout(() => { finishLoading(); }, 3000);
 
       try {
@@ -150,7 +161,7 @@
 
     // ★ 狀態同步引擎 (State Synchronization)
     async function syncState() {
-       if (currentRoomCode && currentUser && firebaseConfig.projectId !== 'demo-local-fallback') {
+       if (currentRoomCode && currentUser && finalConfig.projectId !== 'demo-local-fallback') {
           try {
              const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', currentRoomCode);
              await updateDoc(docRef, { gameStateStr: JSON.stringify(state) });
@@ -239,8 +250,8 @@
 
     // ★ 建立連線房間 (Host)
     window.createRoom = async function() {
-      if (firebaseConfig.projectId === 'demo-local-fallback') {
-         alert("⚠️ 系統偵測未設定資料庫：\n目前為離線環境，無法建立連線大廳。\n若要在您的網站啟用連線功能，請於程式碼中填入 Firebase 設定。");
+      if (finalConfig.projectId === 'demo-local-fallback') {
+         alert("⚠️ 系統偵測未設定資料庫：\n目前為離線環境，無法建立連線大廳。\n若要在您的網站啟用連線功能，請於程式碼上方填入 Firebase 金鑰。");
          return;
       }
       if (!currentUser) { alert("尚未連上伺服器，請稍後"); return; }
@@ -271,7 +282,7 @@
 
     // ★ 加入連線房間 (Guest)
     window.joinRoom = async function() {
-      if (firebaseConfig.projectId === 'demo-local-fallback') {
+      if (finalConfig.projectId === 'demo-local-fallback') {
          alert("⚠️ 系統偵測未設定資料庫：\n目前為離線環境，無法加入連線大廳。");
          return;
       }
